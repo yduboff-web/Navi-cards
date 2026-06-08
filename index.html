@@ -270,6 +270,8 @@ function renderPickerGrid(){
       ? '<span class="pc-taken-by" style="color:var(--gold)">✓ Your character</span>'
       : (takenBy ? '<span class="pc-taken-by">Taken by ' + esc(takenBy) + '</span>' : '');
 
+    var card = document.createElement('div');
+    card.className = 'picker-card' + (isTaken ? ' taken' : '');
     card.innerHTML =
       '<span class="pc-heb">' + ch.heb + '</span>' +
       '<span class="pc-eng">' + ch.eng + '</span>' +
