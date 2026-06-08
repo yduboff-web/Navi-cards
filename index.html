@@ -175,7 +175,7 @@ button.act.export:hover{background:rgba(40,140,70,0.08)}
     <button class="act primary" id="add-btn">+ Add Character</button>
     <button class="act export" id="export-btn">&#8595; Download as Excel</button>
     <button class="act" onclick="window.print()">&#128438; Print</button>
-    <button class="act" id="change-char-btn" style="border-color:rgba(180,60,60,0.4);color:#8a1a1a">&#8635; Change My Character</button>
+    <button class="act" id="change-char-btn" style="border-color:rgba(180,60,60,0.4);color:#8a1a1a">&#8635; Reset All Characters</button>
   </div>
 </div>
 
@@ -223,13 +223,13 @@ var CHARACTERS = [
 ───────────────────────────────────────────── */
 var STORE      = 'bha_navi_v1';
 var NAME_K     = 'bha_navi_name_v1';
-var CLAIM_K    = 'bha_navi_claim_v1';  // which character id this student claimed
+var CLAIM_K    = 'bha_navi_claim_v2';  // array of character ids this student claimed
 var BLURB_LIMIT  = 40;
 var LESSON_LIMIT = 15;
 var cardCounter  = 0;
 var imageData    = {};
 var claimsData   = {};   // { charId: "Student Name" } — from Firebase
-var myClaimId    = null; // the char id this student has claimed
+var myClaimIds   = [];   // array of char ids this student has claimed
 var myStudentName = '';
 
 var STATS = [
@@ -263,11 +263,8 @@ function renderPickerGrid(){
   grid.innerHTML = '';
   CHARACTERS.forEach(function(ch){
     var takenBy = claimsData[ch.id];
-    var isMine  = myClaimId === ch.id;
+    var isMine  = myClaimIds.indexOf(ch.id) !== -1;
     var isTaken = takenBy && !isMine;
-
-    var card = document.createElement('div');
-    card.className = 'picker-card' + (isTaken ? ' taken' : '');
 
     var badge = isMine
       ? '<span class="pc-taken-by" style="color:var(--gold)">✓ Your character</span>'
@@ -298,22 +295,28 @@ function claimCharacter(charId){
     showToast('Already taken — choose another!');
     return;
   }
-
-  // Release old claim if switching
-  if(myClaimId && myClaimId !== charId && window._fbRemove){
-    window._fbRemove(window._fbRef(window._fbDb, 'claims/' + myClaimId));
+  if(myClaimIds.indexOf(charId) !== -1){
+    showToast('You already have this character!');
+    return;
   }
 
-  myClaimId    = charId;
   myStudentName = name;
-  localStorage.setItem(CLAIM_K, JSON.stringify({charId: charId, name: name}));
+  myClaimIds.push(charId);
+  localStorage.setItem(CLAIM_K, JSON.stringify({name: name, charIds: myClaimIds}));
 
   // Write to Firebase
   if(window._fbSet){
     window._fbSet(window._fbRef(window._fbDb, 'claims/' + charId), name);
   }
 
-  openMainPage(charId, name);
+  // First character — open main page; subsequent — just add a card
+  if(myClaimIds.length === 1){
+    openMainPage(charId, name);
+  } else {
+    document.getElementById('picker-overlay').style.display = 'none';
+    addCard(null, charId);
+    saveAll();
+  }
 }
 
 function openMainPage(charId, studentName){
@@ -578,7 +581,7 @@ function buildCharSelectorHTML(pid, currentHeb){
   for(var i = 0; i < CHARACTERS.length; i++){
     var ch = CHARACTERS[i];
     var takenBy = claimsData[ch.id];
-    var isMine  = myClaimId === ch.id;
+    var isMine  = myClaimIds.indexOf(ch.id) !== -1;
     var disabled = (takenBy && !isMine) ? 'disabled class="taken-opt"' : '';
     var takenLabel = (takenBy && !isMine) ? ' (taken)' : '';
     var selected = (ch.heb === currentHeb) ? 'selected' : '';
@@ -654,43 +657,69 @@ function showToast(msg){
 /* ─────────────────────────────────────────────
    INIT
 ───────────────────────────────────────────── */
-document.getElementById('add-btn').onclick    = function(){ addCard(null, myClaimId); saveAll(); };
+// "Add Character" — opens the picker to claim another character
+document.getElementById('add-btn').onclick = function(){
+  if(!myStudentName){
+    showToast('Go back to the picker and enter your name first.');
+    return;
+  }
+  // Pre-fill name in picker and show it
+  var pName = document.getElementById('picker-name');
+  if(pName) pName.value = myStudentName;
+  document.getElementById('picker-overlay').style.display = 'flex';
+};
+
 document.getElementById('export-btn').onclick = exportExcel;
+
 document.getElementById('change-char-btn').onclick = function(){
-  if(confirm('Release your current character and go back to the picker?')){
-    if(myClaimId && window._fbRemove){
-      window._fbRemove(window._fbRef(window._fbDb, 'claims/' + myClaimId));
+  if(confirm('Release ALL your characters and start over?')){
+    // Remove all claims from Firebase
+    if(window._fbRemove){
+      for(var i = 0; i < myClaimIds.length; i++){
+        window._fbRemove(window._fbRef(window._fbDb, 'claims/' + myClaimIds[i]));
+      }
     }
-    myClaimId = null;
+    myClaimIds = [];
+    myStudentName = '';
     localStorage.removeItem(CLAIM_K);
     document.getElementById('cards-list').innerHTML = '';
     cardCounter = 0;
     document.getElementById('main-page').style.display = 'none';
     document.getElementById('picker-overlay').style.display = 'flex';
     var pName = document.getElementById('picker-name');
-    if(pName) pName.value = myStudentName;
+    if(pName) pName.value = '';
   }
 };
 
-// On load — check if student already claimed a character this session
+// On load — restore all previously claimed characters
 (function(){
   var saved = localStorage.getItem(CLAIM_K);
   if(saved){
     try{
       var obj = JSON.parse(saved);
-      myClaimId     = obj.charId;
-      myStudentName = obj.name;
-      // Re-assert claim on Firebase in case it was cleared
-      if(myClaimId && myStudentName && window._fbSet){
-        // Firebase may not be ready yet — will retry via listener
+      // Support both old format {charId, name} and new {charIds, name}
+      myStudentName = obj.name || '';
+      if(obj.charIds && Array.isArray(obj.charIds)){
+        myClaimIds = obj.charIds;
+      } else if(obj.charId){
+        myClaimIds = [obj.charId]; // migrate old single-claim format
+      }
+      // Re-assert all claims on Firebase
+      if(myStudentName && window._fbSet){
+        for(var i = 0; i < myClaimIds.length; i++){
+          window._fbSet(window._fbRef(window._fbDb, 'claims/' + myClaimIds[i]), myStudentName);
+        }
       }
       var pickerName = document.getElementById('picker-name');
       if(pickerName) pickerName.value = myStudentName;
-      openMainPage(myClaimId, myStudentName);
+      if(myClaimIds.length > 0){
+        openMainPage(myClaimIds[0], myStudentName);
+      }
     }catch(e){}
   }
   renderPickerGrid();
 })();
+
 </script>
 </body>
 </html>
